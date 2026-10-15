@@ -4,8 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Portal Ujian & Tugasan Google Classroom</title>
+  
   <!-- Load Google Identity Services SDK -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  
+  <!-- Load Fail Config (Mudah Tukar URL) -->
+  <script src="config.js"></script>
+
   <style>
     :root {
       --primary: #1a73e8;
@@ -41,14 +46,8 @@
     }
     button:hover { background-color: #1557b0; }
     .hidden { display: none; }
-    .form-group {
-      margin-bottom: 15px;
-    }
-    label {
-      display: block;
-      margin-bottom: 5px;
-      font-weight: bold;
-    }
+    .form-group { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; }
     input, textarea, select {
       width: 100%;
       padding: 10px;
@@ -72,15 +71,8 @@
       color: #1967d2;
       font-weight: bold;
     }
-    .tab-btn {
-      background: #e0e0e0;
-      color: #333;
-      margin-right: 5px;
-    }
-    .tab-btn.active {
-      background: var(--primary);
-      color: white;
-    }
+    .tab-btn { background: #e0e0e0; color: #333; margin-right: 5px; }
+    .tab-btn.active { background: var(--primary); color: white; }
   </style>
 </head>
 <body>
@@ -122,17 +114,17 @@
       <form id="create-assignment-form">
         <div class="form-group">
           <label for="assign-title">Tajuk Tugasan / Ujian:</label>
-          <input type="text" id="assign-title" placeholder="Contoh: Kuiz Matematik Bab 1" required>
+          <input type="text" id="assign-title" placeholder="Contoh: Ujian Matematik Bab 1" required>
         </div>
         <div class="form-group">
           <label for="assign-desc">Arahan / Soalan Ujian:</label>
-          <textarea id="assign-desc" rows="4" placeholder="Tulis arahan soalan di sini..." required></textarea>
+          <textarea id="assign-desc" rows="4" placeholder="Tulis soalan/arahan di sini..." required></textarea>
         </div>
         <div class="form-group">
           <label for="assign-date">Tarikh Akhir (Due Date):</label>
           <input type="date" id="assign-date" required>
         </div>
-        <button type="submit">Hantar Tugasan (Auto-Post ke Classroom)</button>
+        <button type="submit">Hantar Tugasan (Auto-Post ke GC & Sheet)</button>
       </form>
     </div>
 
@@ -148,20 +140,15 @@
 </div>
 
 <script>
-  // CLIENT ID GOOGLE CLOUD ANDA
-  const CLIENT_ID = '637460698521-djt73cs1emsa5n5m7p2q8s4feohmhnuh.apps.googleusercontent.com';
-  
-  // SKOP KEBENARAN GOOGLE CLASSROOM
-  const SCOPES = 'https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.coursework.students https://www.googleapis.com/auth/classroom.coursework.me email profile';
-
   let accessToken = null;
   let tokenClient;
   let currentRole = 'teacher';
+  let currentUserEmail = '';
 
   window.onload = function() {
     tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: SCOPES,
+      client_id: CONFIG.CLIENT_ID,
+      scope: CONFIG.SCOPES,
       callback: (response) => {
         if (response.access_token) {
           accessToken = response.access_token;
@@ -181,18 +168,39 @@
     document.getElementById('create-assignment-form').onsubmit = handleCreateAssignment;
   };
 
+  // --- FUNGSI HANTAR REKOD KE APPS SCRIPT / GOOGLE SHEET ---
+  async function sendToAppsScript(payload) {
+    try {
+      await fetch(CONFIG.APPS_SCRIPT_URL, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+    } catch (err) {
+      console.error('Ralat simpan ke Apps Script:', err);
+    }
+  }
+
   async function onLoginSuccess() {
     document.getElementById('login-section').classList.add('hidden');
     document.getElementById('app-section').classList.remove('hidden');
 
-    // Ambil Profil Pengguna
+    // Dapatkan Profil Pengguna
     const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
     const profile = await res.json();
-    document.getElementById('user-email').innerText = profile.email;
+    currentUserEmail = profile.email;
+    document.getElementById('user-email').innerText = currentUserEmail;
 
-    // Load Senarai Kelas
+    // Rekod Log Aktiviti Log Masuk ke Google Sheet via Apps Script
+    sendToAppsScript({
+      action: 'LOG_MASUK',
+      email: currentUserEmail,
+      role: currentRole,
+      details: 'Pengguna berjaya log masuk ke portal'
+    });
+
+    // Muat Turun Senarai Kelas
     loadCourses();
   }
 
@@ -234,7 +242,7 @@
     }
   }
 
-  // --- FUNGSI GURU: CIPTA TUGASAN (AUTO POST KE GC) ---
+  // --- FUNGSI GURU: CIPTA TUGASAN ---
   async function handleCreateAssignment(e) {
     e.preventDefault();
     const courseId = document.getElementById('course-select').value;
@@ -247,7 +255,7 @@
     const description = document.getElementById('assign-desc').value;
     const dateVal = new Date(document.getElementById('assign-date').value);
 
-    const payload = {
+    const payloadGC = {
       title: title,
       description: description,
       workType: 'ASSIGNMENT',
@@ -262,33 +270,45 @@
     };
 
     try {
+      // 1. Post ke Google Classroom
       const res = await fetch(`https://classroom.googleapis.com/v1/courses/${courseId}/courseWork`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payloadGC)
       });
 
+      const resultGC = await res.json();
+
       if (res.ok) {
-        alert(' Berjaya! Tugasan dipost ke Portal & auto-masuk ke Google Classroom.');
+        // 2. Rekod ke Google Sheet via Apps Script
+        sendToAppsScript({
+          action: 'POST_TUGASAN',
+          email: currentUserEmail,
+          courseId: courseId,
+          assignmentId: resultGC.id,
+          title: title,
+          description: description,
+          dueDate: document.getElementById('assign-date').value
+        });
+
+        alert(' Berjaya! Tugasan dipost ke Google Classroom dan direkodkan di Google Sheet.');
         document.getElementById('create-assignment-form').reset();
       } else {
-        const err = await res.json();
-        alert('Gagal post tugasan: ' + JSON.stringify(err));
+        alert('Gagal post tugasan: ' + JSON.stringify(resultGC));
       }
     } catch (err) {
-      alert('Ralat rangkaian: ' + err.message);
+      alert('Ralat Rangkaian: ' + err.message);
     }
   }
 
-  // --- FUNGSI MURID: BACA & HANTAR TUGASAN (AUTO TURN-IN KE GC) ---
+  // --- FUNGSI MURID: BACA & HANTAR TUGASAN ---
   async function loadStudentAssignments(courseId) {
     const container = document.getElementById('assignment-list');
     container.innerHTML = 'Memuatkan tugasan...';
 
-    // 1. Ambil senarai tugasan
     const resWork = await fetch(`https://classroom.googleapis.com/v1/courses/${courseId}/courseWork`, {
       headers: { Authorization: `Bearer ${accessToken}` }
     });
@@ -302,7 +322,6 @@
     container.innerHTML = '';
     
     for (let work of dataWork.courseWork) {
-      // 2. Semak status penghantaran murid bagi tugasan ini
       const resSub = await fetch(`https://classroom.googleapis.com/v1/courses/${courseId}/courseWork/${work.id}/studentSubmissions?userId=me`, {
         headers: { Authorization: `Bearer ${accessToken}` }
       });
@@ -326,6 +345,7 @@
 
   async function submitAssignment(courseId, courseWorkId, submissionId) {
     try {
+      // 1. TurnIn di Google Classroom
       const res = await fetch(`https://classroom.googleapis.com/v1/courses/${courseId}/courseWork/${courseWorkId}/studentSubmissions/${submissionId}:turnIn`, {
         method: 'POST',
         headers: {
@@ -335,10 +355,18 @@
       });
 
       if (res.ok) {
-        alert(' Tugasan berjaya dihantar dan dikemas kini dalam Google Classroom!');
+        // 2. Rekod ke Google Sheet via Apps Script
+        sendToAppsScript({
+          action: 'HANTAR_TUGASAN',
+          email: currentUserEmail,
+          courseId: courseId,
+          courseWorkId: courseWorkId
+        });
+
+        alert(' Tugasan berjaya dihantar ke Google Classroom dan direkodkan di Google Sheet!');
         loadStudentAssignments(courseId);
       } else {
-        alert('Gagal menghantar tugasan.');
+        alert('Gagal menghantar tugasan ke Google Classroom.');
       }
     } catch (err) {
       alert('Ralat: ' + err.message);
