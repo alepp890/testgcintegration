@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Portal Ujian & Tugasan Google Classroom</title>
+  <!-- Load Google Identity Services SDK -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    :root {
+      --primary: #1a73e8;
+      --bg: #f8f9fa;
+      --card-bg: #ffffff;
+      --text: #202124;
+    }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 20px;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: var(--card-bg);
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    h1, h2, h3 { color: #174ea6; }
+    button {
+      background-color: var(--primary);
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      font-size: 15px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    button:hover { background-color: #1557b0; }
+    .hidden { display: none; }
+    .form-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    input, textarea, select {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #dadce0;
+      border-radius: 6px;
+      box-sizing: border-box;
+    }
+    .card {
+      border: 1px solid #e0e0e0;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 15px;
+      background: #fafafa;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      font-size: 12px;
+      border-radius: 4px;
+      background-color: #e8f0fe;
+      color: #1967d2;
+      font-weight: bold;
+    }
+    .tab-btn {
+      background: #e0e0e0;
+      color: #333;
+      margin-right: 5px;
+    }
+    .tab-btn.active {
+      background: var(--primary);
+      color: white;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>Portal Ujian Integrasi Google Classroom</h1>
+  
+  <!-- SKRIN 1: LOG MASUK -->
+  <div id="login-section">
+    <p>Sila log masuk menggunakan akaun Google MOE / DELIMa anda untuk teruskan.</p>
+    <button id="login-btn">Log Masuk dengan Google OAuth</button>
+  </div>
+
+  <!-- SKRIN 2: UTAMA (SELEPAS LOG MASUK) -->
+  <div id="app-section" class="hidden">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <p>Pengguna: <strong id="user-email">-</strong></p>
+      <button id="logout-btn" style="background: #dc3545;">Log Keluar</button>
+    </div>
+    <hr>
+
+    <!-- PILIH ROLES / MODE -->
+    <div style="margin-bottom: 20px;">
+      <button class="tab-btn active" onclick="switchRole('teacher')">Mod Guru (Cipta Tugasan)</button>
+      <button class="tab-btn" onclick="switchRole('student')">Mod Murid (Jawab Tugasan)</button>
+    </div>
+
+    <!-- PILIH KELAS -->
+    <div class="form-group">
+      <label for="course-select">Pilih Kelas Google Classroom:</label>
+      <select id="course-select" onchange="onCourseSelected()">
+        <option value="">-- Memuatkan kelas... --</option>
+      </select>
+    </div>
+
+    <!-- MOD GURU: CIPTA TUGASAN -->
+    <div id="teacher-view">
+      <h2>Cipta Tugasan / Ujian Baru</h2>
+      <form id="create-assignment-form">
+        <div class="form-group">
+          <label for="assign-title">Tajuk Tugasan / Ujian:</label>
+          <input type="text" id="assign-title" placeholder="Contoh: Kuiz Matematik Bab 1" required>
+        </div>
+        <div class="form-group">
+          <label for="assign-desc">Arahan / Soalan Ujian:</label>
+          <textarea id="assign-desc" rows="4" placeholder="Tulis arahan soalan di sini..." required></textarea>
+        </div>
+        <div class="form-group">
+          <label for="assign-date">Tarikh Akhir (Due Date):</label>
+          <input type="date" id="assign-date" required>
+        </div>
+        <button type="submit">Hantar Tugasan (Auto-Post ke Classroom)</button>
+      </form>
+    </div>
+
+    <!-- MOD MURID: LIHAT & HANTAR TUGASAN -->
+    <div id="student-view" class="hidden">
+      <h2>Senarai Tugasan / Ujian Murid</h2>
+      <div id="assignment-list">
+        <p>Sila pilih kelas di atas untuk melihat tugasan.</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  // CLIENT ID GOOGLE CLOUD ANDA
+  const CLIENT_ID = '637460698521-djt73cs1emsa5n5m7p2q8s4feohmhnuh.apps.googleusercontent.com';
+  
+  // SKOP KEBENARAN GOOGLE CLASSROOM
+  const SCOPES = 'https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.coursework.students https://www.googleapis.com/auth/classroom.coursework.me email profile';
+
+  let accessToken = null;
+  let tokenClient;
+  let currentRole = 'teacher';
+
+  window.onload = function() {
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPES,
+      callback: (response) => {
+        if (response.access_token) {
+          accessToken = response.access_token;
+          onLoginSuccess();
+        }
+      },
+    });
+
+    document.getElementById('login-btn').onclick = () => {
+      tokenClient.requestAccessToken();
+    };
+
+    document.getElementById('logout-btn').onclick = () => {
+      location.reload();
+    };
+
+    document.getElementById('create-assignment-form').onsubmit = handleCreateAssignment;
+  };
+
+  async function onLoginSuccess() {
+    document.getElementById('login-section').classList.add('hidden');
+    document.getElementById('app-section').classList.remove('hidden');
+
+    // Ambil Profil Pengguna
+    const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    const profile = await res.json();
+    document.getElementById('user-email').innerText = profile.email;
+
+    // Load Senarai Kelas
+    loadCourses();
+  }
+
+  async function loadCourses() {
+    const res = await fetch('https://classroom.googleapis.com/v1/courses?courseStates=ACTIVE', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    const data = await res.json();
+    const select = document.getElementById('course-select');
+    select.innerHTML = '<option value="">-- Pilih Kelas --</option>';
+
+    if (data.courses && data.courses.length > 0) {
+      data.courses.forEach(c => {
+        select.innerHTML += `<option value="${c.id}">${c.name}</option>`;
+      });
+    } else {
+      select.innerHTML = '<option value="">Tiada kelas aktif dijumpai</option>';
+    }
+  }
+
+  function switchRole(role) {
+    currentRole = role;
+    const btns = document.querySelectorAll('.tab-btn');
+    btns[0].classList.toggle('active', role === 'teacher');
+    btns[1].classList.toggle('active', role === 'student');
+
+    document.getElementById('teacher-view').classList.toggle('hidden', role !== 'teacher');
+    document.getElementById('student-view').classList.toggle('hidden', role !== 'student');
+
+    onCourseSelected();
+  }
+
+  function onCourseSelected() {
+    const courseId = document.getElementById('course-select').value;
+    if (!courseId) return;
+
+    if (currentRole === 'student') {
+      loadStudentAssignments(courseId);
+    }
+  }
+
+  // --- FUNGSI GURU: CIPTA TUGASAN (AUTO POST KE GC) ---
+  async function handleCreateAssignment(e) {
+    e.preventDefault();
+    const courseId = document.getElementById('course-select').value;
+    if (!courseId) {
+      alert('Sila pilih kelas terlebih dahulu!');
+      return;
+    }
+
+    const title = document.getElementById('assign-title').value;
+    const description = document.getElementById('assign-desc').value;
+    const dateVal = new Date(document.getElementById('assign-date').value);
+
+    const payload = {
+      title: title,
+      description: description,
+      workType: 'ASSIGNMENT',
+      state: 'PUBLISHED',
+      maxPoints: 100,
+      dueDate: {
+        year: dateVal.getFullYear(),
+        month: dateVal.getMonth() + 1,
+        day: dateVal.getDate()
+      },
+      dueTime: { hours: 23, minutes: 59 }
+    };
+
+    try {
+      const res = await fetch(`https://classroom.googleapis.com/v1/courses/${courseId}/courseWork`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        alert(' Berjaya! Tugasan dipost ke Portal & auto-masuk ke Google Classroom.');
+        document.getElementById('create-assignment-form').reset();
+      } else {
+        const err = await res.json();
+        alert('Gagal post tugasan: ' + JSON.stringify(err));
+      }
+    } catch (err) {
+      alert('Ralat rangkaian: ' + err.message);
+    }
+  }
+
+  // --- FUNGSI MURID: BACA & HANTAR TUGASAN (AUTO TURN-IN KE GC) ---
+  async function loadStudentAssignments(courseId) {
+    const container = document.getElementById('assignment-list');
+    container.innerHTML = 'Memuatkan tugasan...';
+
+    // 1. Ambil senarai tugasan
+    const resWork = await fetch(`https://classroom.googleapis.com/v1/courses/${courseId}/courseWork`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    const dataWork = await resWork.json();
+
+    if (!dataWork.courseWork || dataWork.courseWork.length === 0) {
+      container.innerHTML = '<p>Tiada tugasan dalam kelas ini.</p>';
+      return;
+    }
+
+    container.innerHTML = '';
+    
+    for (let work of dataWork.courseWork) {
+      // 2. Semak status penghantaran murid bagi tugasan ini
+      const resSub = await fetch(`https://classroom.googleapis.com/v1/courses/${courseId}/courseWork/${work.id}/studentSubmissions?userId=me`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      const dataSub = await resSub.json();
+      const submission = dataSub.studentSubmissions ? dataSub.studentSubmissions[0] : null;
+
+      const isTurnedIn = submission && (submission.state === 'TURNED_IN' || submission.state === 'RETURNED');
+
+      container.innerHTML += `
+        <div class="card">
+          <h3>${work.title}</h3>
+          <p>${work.description || 'Tiada arahan tambahan.'}</p>
+          <p><span class="badge">Status: ${isTurnedIn ? 'SUDAH DIHANTAR ' : 'BELUM DIHANTAR '}</span></p>
+          ${!isTurnedIn && submission ? `
+            <button onclick="submitAssignment('${courseId}', '${work.id}', '${submission.id}')">Tandakan Selesai / Hantar ke GC</button>
+          ` : ''}
+        </div>
+      `;
+    }
+  }
+
+  async function submitAssignment(courseId, courseWorkId, submissionId) {
+    try {
+      const res = await fetch(`https://classroom.googleapis.com/v1/courses/${courseId}/courseWork/${courseWorkId}/studentSubmissions/${submissionId}:turnIn`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (res.ok) {
+        alert(' Tugasan berjaya dihantar dan dikemas kini dalam Google Classroom!');
+        loadStudentAssignments(courseId);
+      } else {
+        alert('Gagal menghantar tugasan.');
+      }
+    } catch (err) {
+      alert('Ralat: ' + err.message);
+    }
+  }
+</script>
+
+</body>
+</html>
